@@ -1,0 +1,77 @@
+# Static-site checks for olivergreig.com. Replaces the sunset hermes-validate
+# workflow; the job keeps the name `validate` because the main ruleset
+# requires a check with that name.
+#
+# Every check is its own step with `if: ${{ !cancelled() }}` so one failure
+# never hides another; scripts/check-ci-policy.mjs fails the build if a check
+# step loses that condition.
+
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+
+      - name: HTML is valid
+        id: html
+        if: ${{ !cancelled() }}
+        run: npx --yes html-validate@11.6.2 "**/*.html"
+
+      - name: Internal links resolve
+        id: links
+        if: ${{ !cancelled() }}
+        run: npx --yes linkinator@8.0.3 . --recurse --skip "^https?://"
+
+      - name: No localhost references
+        id: localhost
+        if: ${{ !cancelled() }}
+        run: "! grep -rEn 'http://localhost|127\\.0\\.0\\.1' --include=*.html --include=*.css --include=*.js ."
+
+      - name: CI steps run through failures
+        id: policy
+        if: ${{ !cancelled() }}
+        run: node scripts/check-ci-policy.mjs .github/workflows/ci.yml
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOMES: >-
+            html=${{ steps.html.outcome }}
+            links=${{ steps.links.outcome }}
+            localhost=${{ steps.localhost.outcome }}
+            policy=${{ steps.policy.outcome }}
+        run: |
+          failed=""
+          for pair in $OUTCOMES; do
+            case "$pair" in *=success) ;; *) failed="$failed ${pair%%=*}" ;; esac
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::failed checks:$failed"
+            exit 1
+          fi
+          echo "all checks passed"
